@@ -1,0 +1,128 @@
+---
+title: "Tempering"
+author: "Paul M"
+date: "March 22, 2016"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+This example is based on one from http://neuromat.numec.prp.usp.br/sites/default/files/MCMC.pdf.
+First we define a density to work with and plot it. We want something multi-modal
+```{r}
+library(mcmc)
+mydens<-function(x) 0.5*dnorm(x)+0.2*dnorm(x,-8,2)+0.3*dnorm(x,15,3)
+xx<-seq(-18,25,0.01)   # Some x-values to plot against
+plot(xx,mydens(xx),type="l",xlab="x",ylab="Density",main="Our target density")
+```
+
+In this example we start from x=0 and use Metropolis-Hastings MCMC using a random walk proposal (standard deviation of 1, the default). We need to define a function to evaluate the log un-normalized posterior for metrop to work with.
+```{r}
+lupost<-function(x) log(0.5*dnorm(x)+0.2*dnorm(x,-8,2)+0.3*dnorm(x,15,3))
+```
+We next run a realization starting from 0 and using 1e5 steps: 
+```{r}
+set.seed(28651)
+out<-metrop(lupost,initial=2,nbatch=1e5,scale=1)
+```
+
+We can see the evolution of the chain over time as follows:
+```{r}
+plot(out$batch[,1],1:1e5,type='l',xlab="x",ylab="idx",main="Simulated chain trajectory")
+```
+Let's construct a histogram to see what the posterior looks like
+```{r}
+hist(out$batch,breaks=500,probability=TRUE,xlab="x",ylab="Density",main="Estimated density compared to target")
+lines(xx,mydens(xx),col=2,lwd=2)
+```
+
+
+
+We see that the chain had trouble mixing between the three peaks of the posterior, almost completely missing the righthand peak.
+Now we try tempering, to see if we can improve on this.
+We re-run the simulations using parallel tempering with 5 temperatures: 1, 0.7, 0.5, 0.3, 0.1. We can look at the target densities at each temperature with:
+
+```{r}
+witch.which <- c(0.1, 0.3, 0.5, 0.7, 1.0)   # these are the temperatures
+ncomp <- length(witch.which)
+my_cols <- c(4,1,1,1,2)
+plot(xx,mydens(xx),type="l",lwd=2,col=2, xlab="x",ylab="Density",
+     main="The five target densities")
+sapply((ncomp-1):1,
+       function(beta_idx) {
+           beta <- witch.which[beta_idx]
+           yy <- mydens(xx)^beta/integrate(function(x) mydens(x)^beta,-50,50,subdivisions = 1000)$value
+           lines(xx,yy,lwd=2,col=my_cols[beta_idx])
+       })
+```
+
+So, now let's run popuation MCMC in which we run 5 chains, one at each of those temperatures.
+We use the "temper()" function in the MCMC R package. As part of this, we have to define which chains are 'neighbors' (and so can have their states swapped)
+
+```{r}
+neighbors <- matrix(FALSE, ncomp, ncomp)  # defines which chains are adjacent to which.
+neighbors[row(neighbors) == col(neighbors) + 1] <- TRUE
+neighbors[row(neighbors) == col(neighbors) - 1] <- TRUE
+ludfun <- function(state) {
+    stopifnot(is.numeric(state))
+    stopifnot(length(state) == 2)
+    # temper will pass this function arguments using the vector state (the current state)
+    # the first elelment of the current state is the temperature of the calling chain
+    icomp <- state[1]  
+    stopifnot(icomp == as.integer(icomp))
+    stopifnot(1 <= icomp && icomp <= ncomp)
+    # now read off the current state of this chain (everything except the temperature)
+    x <- state[-1]
+    bnd <- witch.which[icomp]
+    return(bnd*(log(0.5*dnorm(x)+0.2*dnorm(x,-8,2)+0.3*dnorm(x,15,3))))
+}
+thetas <- matrix(0, ncomp, 1)  # defines the initial thetas (=0 for each chain)
+outREM <- temper(ludfun, initial = thetas, neighbors = neighbors, nbatch = 20000,blen = 1, scale = 1, parallel = TRUE, debug = TRUE)
+```
+
+Look at the results and compare it to what we get with 100000 steps (that is, the same computational cost) without tempering:
+
+```{r}
+hist(outREM$batch[,5,1],breaks=100,probability = TRUE,xlab="x",ylab="Density",main="Estimated densities compared to target")
+out_hist <- hist(out$batch[1:100000,1],breaks=100,plot=FALSE)
+lines(xx,mydens(xx),col=2,lwd=2)
+lines(out_hist$mids,out_hist$density,col=4,lwd=2)
+legend(10,0.15,c("Target","Est. Tempering","Est. No Tempering"),col=c(2,1,4),lwd=c(2,1,2),bty="n")
+```
+
+Let's do the same for the other temperature chains, to see what they look like:
+```{r}
+hist(outREM$batch[,4,1],breaks=100,probability = TRUE,xlab="x",ylab="Density",main="Estimated densities compared to target")
+out_hist <- hist(out$batch[1:100000,1],breaks=100,plot=FALSE)
+lines(xx,mydens(xx),col=2,lwd=2)
+lines(out_hist$mids,out_hist$density,col=4,lwd=2)
+legend(10,0.15,c("Target","Next warmest Temp","Est. No Tempering"),col=c(2,1,4),lwd=c(2,1,2),bty="n")
+
+hist(outREM$batch[,3,1],breaks=100,probability = TRUE,xlab="x",ylab="Density",main="Estimated densities compared to target")
+out_hist <- hist(out$batch[1:100000,1],breaks=100,plot=FALSE)
+lines(xx,mydens(xx),col=2,lwd=2)
+lines(out_hist$mids,out_hist$density,col=4,lwd=2)
+legend(10,0.12,c("Target","Even warmer Temp.","Est. No Tempering"),col=c(2,1,4),lwd=c(2,1,2),bty="n")
+
+hist(outREM$batch[,2,1],breaks=100,probability = TRUE,xlab="x",ylab="Density",main="Estimated densities compared to target")
+out_hist <- hist(out$batch[1:100000,1],breaks=100,plot=FALSE)
+lines(xx,mydens(xx),col=2,lwd=2)
+lines(out_hist$mids,out_hist$density,col=4,lwd=2)
+legend(10,0.07,c("Target","Very warm Temp.","Est. No Tempering"),col=c(2,1,4),lwd=c(2,1,2),bty="n")
+
+hist(outREM$batch[,1,1],breaks=100,probability = TRUE,xlab="x",ylab="Density",main="Estimated densities compared to target")
+out_hist <- hist(out$batch[1:100000,1],breaks=100,plot=FALSE)
+lines(xx,mydens(xx),col=2,lwd=2)
+lines(out_hist$mids,out_hist$density,col=4,lwd=2)
+legend(10,0.053,c("Target","Warmest temp.","Est. No Tempering"),col=c(2,1,4),lwd=c(2,1,2),bty="n")
+
+```
+
+We can compare the trajectory of the chain's realization without tempering, with the one of the lowest temperature replica with tempering:
+
+```{r}
+layout(matrix(1:2,nc=2))
+plot(out$batch[1:20000],1:20000,xlim=c(-18,25),xlab="x",ylab="idx",type="l",main="No tempering")
+plot(outREM$batch[1:20000,5,1],1:20000,xlim=c(-18,25),xlab="x",ylab="idx",type="l",main="Tempering")
+```
+
